@@ -1146,13 +1146,31 @@ function fTotal(v, cur) {
 // ================================================================
 //  Render
 // ================================================================
+
+// tbody の内容を設定するヘルパー（IE/Edge互換 — div経由でパース後にrowsを移動）
+function updateTbody(html) {
+  const tbody = document.getElementById('tbody');
+  if (!tbody) return;
+
+  // 既存行を全削除（deleteRow は IE でも動作する）
+  while (tbody.rows.length) tbody.deleteRow(0);
+
+  if (!html) return;
+
+  // <div> 経由でパース（div は IE の innerHTMLテーブル制限を受けない）
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = '<table><tbody>' + html + '</tbody></table>';
+  const src = wrapper.querySelector('tbody');
+  if (src) {
+    while (src.rows.length) tbody.appendChild(src.rows[0]);
+  }
+}
+
 function render() {
-  const tb = document.getElementById('tbody');
   const tf = document.getElementById('tfoot');
-  tb.innerHTML = '';
 
   if (!stocks.length) {
-    tb.innerHTML = '<tr><td colspan="14"><div class="empty"><h3>銘柄が登録されていません</h3><p>上のフォームから追加してください</p></div></td></tr>';
+    updateTbody('<tr><td colspan="14"><div class="empty"><h3>銘柄が登録されていません</h3><p>上のフォームから追加してください</p></div></td></tr>');
     tf.style.display = 'none';
     updateSummary();
     updateChart();
@@ -1161,7 +1179,13 @@ function render() {
 
   tf.style.display = '';
 
-  stocks.forEach((s, idx) => {
+  const mc = (key, fmtFn, val) => {
+    const c = metricClass(key, val);
+    return `<td class="${c}">${fmtFn(val)}</td>`;
+  };
+
+  // updateTbody: IE/Edge互換フォールバック付きで tbody を更新
+  updateTbody(stocks.map((s, idx) => {
     const d = s.data;
     const cur = d?.currency || (isJP(s.code) ? 'JPY' : 'USD');
     const chg = (d?.currentPrice != null && d?.previousClose != null)
@@ -1176,11 +1200,6 @@ function render() {
     const updTime = d?.updatedAt
       ? new Date(d.updatedAt).toLocaleTimeString('ja-JP', {hour:'2-digit',minute:'2-digit'})
       : '';
-
-    const mc = (key, fmtFn, val) => {
-      const c = metricClass(key, val);
-      return `<td class="${c}">${fmtFn(val)}</td>`;
-    };
 
     let nameCell;
     if (s.loading) {
@@ -1205,8 +1224,7 @@ function render() {
 
     const divPlaceholder = d?.dividendRate != null ? (+d.dividendRate).toFixed(1) : '0';
 
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
+    return `<tr>
       <td class="td-code">${escHtml(s.code)}</td>
       <td class="td-l td-name" title="${escHtml(d?.name || '')}">${nameCell}</td>
       <td class="td-price ${chgCls}">${priceCell}</td>
@@ -1232,9 +1250,8 @@ function render() {
         <button class="btn-sm btn-ref" onclick="refreshOne(${idx})" title="更新">&#x21BB;</button>
         <button class="btn-sm btn-del" onclick="removeStock(${idx})" title="削除">&#x2715;</button>
       </td>
-    `;
-    tb.appendChild(tr);
-  });
+    </tr>`;
+  }).join(''));
 
   updateSummary();
   updateChart();
@@ -1402,6 +1419,34 @@ async function refreshAll() {
   toast('全銘柄の更新が完了しました', 'ok');
 }
 
+// 指定タブの全銘柄を更新（ページ読み込み時の自動更新用）
+async function refreshTab(tabName) {
+  const arr = stocksData[tabName];
+  if (!arr.length) return;
+  // ローディング状態をセット
+  arr.forEach(s => { s.loading = true; s.error = null; });
+  if (activeTab === tabName) render();
+  await Promise.all(arr.map(async (s, i) => {
+    try {
+      const d = await fetchStockData(s.code);
+      if (arr[i]?.code !== s.code) return;
+      arr[i].data    = d;
+      arr[i].loading = false;
+      if (arr[i].dividendPerShare == null && d.dividendRate != null) {
+        arr[i].dividendPerShare = +d.dividendRate.toFixed(1);
+      }
+    } catch(e) {
+      if (arr[i]?.code === s.code) {
+        arr[i].loading = false;
+        arr[i].error   = e.message;
+      }
+    } finally {
+      saveData();
+      if (activeTab === tabName) render();
+    }
+  }));
+}
+
 function removeStock(idx) {
   const code = stocks[idx].code;
   stocks.splice(idx, 1);
@@ -1481,6 +1526,17 @@ function toast(msg, type) {
 // ================================================================
 loadData();
 render();
+
+// 依頼②：ページを開く都度、両タブの登録銘柄を自動更新
+setTimeout(() => {
+  const tabs = ['purchased', 'watchlist'].filter(t => stocksData[t].length > 0);
+  if (!tabs.length) return;
+  const total = tabs.reduce((n, t) => n + stocksData[t].length, 0);
+  toast(`登録銘柄 ${total}件 を自動更新中…`, 'info');
+  Promise.all(tabs.map(t => refreshTab(t))).then(() => {
+    toast('自動更新が完了しました', 'ok');
+  });
+}, 500);
 </script>
 </body>
 </html>
